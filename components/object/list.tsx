@@ -49,18 +49,20 @@ import {
 import { SearchInput } from "@/components/search-input"
 import { PageHeader } from "@/components/page-header"
 import { DataTable } from "@/components/data-table/data-table"
+import { DANGER_BUTTON_CLASS } from "@/components/danger-button"
 import { Spinner } from "@/components/ui/spinner"
 import { useDataTable } from "@/hooks/use-data-table"
 import { useObject } from "@/hooks/use-object"
+import { useObjectListPagination } from "@/hooks/use-object-list-pagination"
 import { useBucket } from "@/hooks/use-bucket"
 import { useLocalStorage } from "@/hooks/use-local-storage"
 import { usePermissions } from "@/hooks/use-permissions"
 import { useApi } from "@/contexts/api-context"
 import { useMessage } from "@/lib/feedback/message"
-import { exportFile } from "@/lib/export-file"
+import { downloadUrl } from "@/lib/export-file"
 import { getAttachmentContentDisposition } from "@/lib/content-disposition"
-import { getContentType } from "@/lib/mime-types"
 import { formatBytes, formatDateTime } from "@/lib/functions"
+import { cn } from "@/lib/utils"
 import { normalizeDateToIso } from "@/lib/safe-date"
 import { buildBucketPath } from "@/lib/bucket-path"
 import {
@@ -432,14 +434,18 @@ export function ObjectList({
   const filteredEmptyState = displayState === "filtered-partial" || displayState === "filtered-empty"
   const emptyTitle = filteredEmptyState
     ? t(displayState === "filtered-partial" ? "No matches in loaded objects" : "No matching objects")
-    : t("No Objects")
+    : displayState === "partial"
+      ? t("Load next objects")
+      : t("No Objects")
   const emptyDescription = filteredEmptyState
     ? t(
         displayState === "filtered-partial"
           ? "More objects have not been searched yet."
           : "No loaded objects match this filter.",
       )
-    : t("Upload files or create folders to populate this bucket.")
+    : displayState === "partial"
+      ? t("More objects have not been searched yet.")
+      : t("Upload files or create folders to populate this bucket.")
 
   const downloadFile = React.useCallback(
     async (key: string) => {
@@ -448,14 +454,8 @@ export function ObjectList({
       try {
         const filename = key.split("/").pop() ?? ""
         const url = await getSignedUrl(key, 3600, getAttachmentContentDisposition(filename))
-        const response = await fetch(url)
-        if (!response.ok) throw new Error(t("Download Failed"))
-        const headers: Record<string, string> = {
-          "content-type": getContentType(response.headers, filename),
-          filename: response.headers.get("content-disposition")?.split("filename=")[1] ?? "",
-        }
-        const blob = await response.blob()
-        exportFile({ headers, data: blob }, filename)
+        downloadUrl(url, filename)
+        message.success(t("Download ready"))
       } catch (err) {
         message.error((err as Error)?.message ?? t("Download Failed"))
       } finally {
@@ -855,25 +855,7 @@ export function ObjectList({
     void fetchObjects({ token: nextToken, append: true })
   }, [fetchObjects, nextToken])
 
-  React.useEffect(() => {
-    const node = loadMoreRef.current
-    if (!node || !nextToken || typeof IntersectionObserver === "undefined") return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          loadNextBatch()
-        }
-      },
-      { rootMargin: "320px 0px" },
-    )
-
-    observer.observe(node)
-
-    return () => {
-      observer.disconnect()
-    }
-  }, [loadNextBatch, nextToken])
+  useObjectListPagination({ loadMoreRef, nextToken, loading, loadMoreError, loadNextBatch })
 
   return (
     <div className="space-y-6">
@@ -999,7 +981,7 @@ export function ObjectList({
         </div>
       ) : null}
 
-      {data.length > 0 ? (
+      {data.length > 0 || nextToken ? (
         <div
           ref={loadMoreRef}
           role={loadMoreError ? "alert" : undefined}
@@ -1091,8 +1073,7 @@ export function ObjectList({
             <AlertDialogAction
               render={
                 <Button
-                  variant="destructive"
-                  className="w-full text-white sm:w-auto"
+                  className={cn("w-full sm:w-auto", DANGER_BUTTON_CLASS)}
                   onClick={handleConfirmDelete}
                   disabled={bucketVersioningState === "unknown"}
                 >
